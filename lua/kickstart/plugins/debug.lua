@@ -5,6 +5,8 @@
 -- Primarily focused on configuring the debugger for Go, but can
 -- be extended to other languages as well. That's why it's called
 -- kickstart.nvim and not kitchen-sink.nvim ;)
+--
+-- HEY ME - I started modifying this for Rust
 
 return {
   -- NOTE: Yes, you can install new plugins here!
@@ -18,15 +20,45 @@ return {
     'nvim-neotest/nvim-nio',
 
     -- Installs the debug adapters for you
+    -- Mason should already be installed, this just seems more thorough
     'williamboman/mason.nvim',
     'jay-babu/mason-nvim-dap.nvim',
 
-    -- Add your own debuggers here
-    'leoluz/nvim-dap-go',
+    -- Add Rust debugger?
   },
   config = function()
     local dap = require 'dap'
     local dapui = require 'dapui'
+    local mason_registry = require 'mason-registry'
+
+    local function get_package_name()
+      local current_dir = vim.fn.expand '%:p:h' -- Get the directory of the current file
+
+      while true do
+        local cargo_toml_path = current_dir .. '/Cargo.toml'
+        local file = io.open(cargo_toml_path, 'r')
+
+        if file then
+          local content = file:read '*a'
+          file:close()
+          local package_match = content:match '^%s*%[package%]'
+          if package_match then
+            local name_match = content:match 'name%s*=%s*"([^"]+)"'
+            if name_match then
+              return name_match
+            end
+          end
+        end
+
+        local parent_dir = vim.fn.fnamemodify(current_dir, ':h')
+        if parent_dir == current_dir then -- Reached the root without finding
+          break
+        end
+        current_dir = parent_dir
+      end
+
+      return nil -- Couldn't find a package Cargo.toml
+    end
 
     require('mason-nvim-dap').setup {
       -- Makes a best effort to setup the various debuggers with
@@ -41,7 +73,7 @@ return {
       -- online, please don't ask me how to install them :)
       ensure_installed = {
         -- Update this to ensure that you have the debuggers for the langs you want
-        'delve',
+        'codelldb',
       },
     }
 
@@ -77,14 +109,44 @@ return {
       },
     }
 
+    -- Configure the dap adapter for codelldb
+    -- Used Google Gemini for this a lot.
+    local codelldb_path = mason_registry.get_package('codelldb'):get_install_path() .. '/codelldb'
+
+    dap.adapters.lldb = {
+      type = 'executable',
+      command = codelldb_path,
+      name = 'codelldb',
+    }
+
+    dap.configurations.rust = {
+      {
+        name = 'Debug Unit Test',
+        type = 'lldb', -- Now referring to codelldb
+        request = 'launch',
+        program = function()
+          local package_name = get_package_name()
+          if package_name then
+            return './target/debug/' .. package_name --:gsub('-', '_') -- .. '-' .. string.sub(vim.fs.basename(vim.api.nvim_buf_get_name(0)), 1, 8)
+          else
+            return nil
+          end
+        end,
+        args = { '--test', vim.fs.basename(vim.api.nvim_buf_get_name(0)):gsub('.rs', ''), '--exact', '-Z unstable-options', '--show-output' },
+        cwd = '${workspaceFolder}',
+        --        initCommands = {
+        --          'break-style regex',
+        --          'settings set target.source-map-style auto',
+        --          'settings set target.process.stop-on-sharedlibrary-events true',
+        --        },
+      },
+    }
+
     -- Toggle to see last session result. Without this, you can't see session output in case of unhandled exception.
     vim.keymap.set('n', '<F7>', dapui.toggle, { desc = 'Debug: See last session result.' })
 
     dap.listeners.after.event_initialized['dapui_config'] = dapui.open
     dap.listeners.before.event_terminated['dapui_config'] = dapui.close
     dap.listeners.before.event_exited['dapui_config'] = dapui.close
-
-    -- Install golang specific config
-    require('dap-go').setup()
   end,
 }
